@@ -1,0 +1,25 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [production-deploy]
+  workflow_dispatch:
+
+# One deploy at a time per environment; a newer push waits instead of cancelling a running deploy.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: checks
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+    secrets: inherit

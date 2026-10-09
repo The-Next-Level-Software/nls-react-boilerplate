@@ -118,6 +118,50 @@ vite/
    ```
 3. Add a nav item in `src/config/navigation.ts`.
 
-## Deployment
+## CI/CD
 
-It's a static SPA: deploy `dist/` anywhere. Configure your host to rewrite unknown paths to `/index.html` (e.g. Netlify `_redirects`: `/* /index.html 200`; Vercel: a rewrite to `/index.html`), so deep links like `/users` work on refresh.
+| Branch              | Workflow                                                           | What happens                                                       |
+| ------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| any PR, `main`      | [`ci.yml`](.github/workflows/ci.yml)                               | Prettier check, ESLint, typecheck + build                          |
+| `staging-deploy`    | [`deploy-staging.yml`](.github/workflows/deploy-staging.yml)       | CI checks, then build and deploy to the **staging** environment    |
+| `production-deploy` | [`deploy-production.yml`](.github/workflows/deploy-production.yml) | CI checks, then build and deploy to the **production** environment |
+
+Both deploy workflows call [`deploy.yml`](.github/workflows/deploy.yml), which builds with the environment's variables and uploads `dist/` to a VPS over SSH. Each deploy creates `DEPLOY_PATH/releases/<timestamp>-<sha>/` and then atomically switches the `DEPLOY_PATH/current` symlink, so there is no half-deployed state. The last 5 releases are kept. Deploys can also be started by hand from the Actions tab (**Run workflow**).
+
+**Releasing:** merge work into `main`, then promote it:
+
+```bash
+git checkout staging-deploy && git merge main && git push        # deploy to staging
+git checkout production-deploy && git merge staging-deploy && git push   # deploy to production
+```
+
+### One-time setup
+
+1. **Server** (per environment): install Nginx, create the deploy directory (e.g. `/var/www/admin`) owned by the deploy user, and use [`deploy/nginx.conf`](deploy/nginx.conf) plus [`deploy/security-headers.conf`](deploy/security-headers.conf) as the site config. Its `root` must be `<DEPLOY_PATH>/current`. Add HTTPS with `certbot --nginx`.
+2. **SSH key**: create a key pair just for deploys (`ssh-keygen -t ed25519 -f deploy_key -N ""`), add `deploy_key.pub` to the deploy user's `~/.ssh/authorized_keys`, and get the host key with `ssh-keyscan -H your-server`.
+3. **GitHub environments**: in _Settings → Environments_, create `staging` and `production` (consider required reviewers on `production`) and add:
+
+| Name              | Type     | Required | Example                                                          |
+| ----------------- | -------- | -------- | ---------------------------------------------------------------- |
+| `SSH_HOST`        | secret   | yes      | `203.0.113.10`                                                   |
+| `SSH_USER`        | secret   | yes      | `deploy`                                                         |
+| `SSH_PRIVATE_KEY` | secret   | yes      | contents of `deploy_key`                                         |
+| `DEPLOY_PATH`     | secret   | yes      | `/var/www/admin`                                                 |
+| `SSH_PORT`        | secret   | no       | `22`                                                             |
+| `SSH_KNOWN_HOSTS` | secret   | no*      | output of `ssh-keyscan -H host`                                  |
+| `VITE_API_URL`    | variable | no       | `https://api.example.com`                                        |
+| `VITE_APP_NAME`   | variable | no       | `Acme Admin`                                                     |
+| `APP_URL`         | variable | no       | `https://admin.example.com` (enables a post-deploy health check) |
+
+\* Without `SSH_KNOWN_HOSTS` the workflow trusts the key from `ssh-keyscan` at deploy time; setting it is more secure.
+
+Until the required secrets exist, the deploy job **skips with a warning** instead of failing, so new projects from this template stay green.
+
+**Rollback:** point `current` at a previous release on the server:
+
+```bash
+cd /var/www/admin && ls -1t releases/          # pick a release
+ln -sfn releases/<previous> current.tmp && mv -Tf current.tmp current
+```
+
+Hosting elsewhere: `dist/` is a static SPA, so any static host works as long as unknown paths are rewritten to `/index.html`.

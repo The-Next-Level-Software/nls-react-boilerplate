@@ -7,8 +7,6 @@ dist-ssr
 *.tsbuildinfo
 
 # Env files (commit .env.example only)
-.env
-.env.*
 !.env.example
 
 # Logs
@@ -20,9 +18,9 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Editor / OS
-.vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
 *.suo
 *.sw?
+config.bat
