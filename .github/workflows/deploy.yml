@@ -1,0 +1,130 @@
+# Reusable deploy job: builds the app with the environment's variables and ships
+# dist/ to a VPS over SSH as an atomic release (releases/<id> + `current` symlink).
+#
+# Configure per GitHub Environment (Settings → Environments → staging / production):
+#   Secrets:   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, DEPLOY_PATH
+#              SSH_PORT (optional, default 22), SSH_KNOWN_HOSTS (optional, recommended)
+#   Variables: VITE_API_URL, VITE_APP_NAME (optional), APP_URL (optional, enables health check)
+name: Deploy (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment to deploy to (staging | production)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.APP_URL }}
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      KEEP_RELEASES: 5
+    steps:
+      - name: Check deployment settings
+        id: settings
+        run: |
+          missing=()
+          for name in SSH_HOST SSH_USER DEPLOY_PATH; do
+            [ -z "${!name}" ] && missing+=("$name")
+          done
+          [ -z "${{ secrets.SSH_PRIVATE_KEY != '' && 'set' || '' }}" ] && missing+=("SSH_PRIVATE_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::warning title=Deployment skipped::Missing secrets for the '${{ inputs.environment }}' environment: ${missing[*]}. See the Deployment section of the README."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.settings.outputs.ready == 'true'
+
+      - uses: actions/setup-node@v7
+        if: steps.settings.outputs.ready == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        if: steps.settings.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Build
+        if: steps.settings.outputs.ready == 'true'
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+          VITE_APP_NAME: ${{ vars.VITE_APP_NAME }}
+        run: npm run build
+
+      - name: Configure SSH
+        if: steps.settings.outputs.ready == 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if [ -n "$SSH_KNOWN_HOSTS" ]; then
+            printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::SSH_KNOWN_HOSTS is not set; trusting the host key from ssh-keyscan."
+            ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" > ~/.ssh/known_hosts
+          fi
+          cat > ~/.ssh/config <<CONFIG
+          Host deploy-target
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          CONFIG
+
+      - name: Upload release
+        if: steps.settings.outputs.ready == 'true'
+        run: |
+          RELEASE="$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          echo "RELEASE=$RELEASE" >> "$GITHUB_ENV"
+          ssh deploy-target "mkdir -p '$DEPLOY_PATH/releases/$RELEASE'"
+          rsync -az --delete dist/ "deploy-target:$DEPLOY_PATH/releases/$RELEASE/"
+
+      - name: Activate release
+        if: steps.settings.outputs.ready == 'true'
+        run: |
+          ssh deploy-target bash -s -- "$DEPLOY_PATH" "$RELEASE" "$KEEP_RELEASES" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          # Atomic switch: point `current` at the new release in one rename.
+          ln -sfn "releases/$2" current.tmp
+          mv -Tf current.tmp current
+          # Keep the newest N releases for quick rollbacks.
+          ls -1dt releases/*/ | tail -n +"$(( $3 + 1 ))" | xargs -r rm -rf
+          echo "Active release: $(readlink current)"
+          REMOTE
+
+      - name: Health check
+        if: steps.settings.outputs.ready == 'true' && vars.APP_URL != ''
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 3 --retry-all-errors -o /dev/null "${{ vars.APP_URL }}"
+
+      - name: Summary
+        if: steps.settings.outputs.ready == 'true'
+        run: |
+          {
+            echo "### Deployed to ${{ inputs.environment }}"
+            echo "- Release: \`$RELEASE\`"
+            echo "- Commit: \`${GITHUB_SHA::7}\`"
+            [ -n "${{ vars.APP_URL }}" ] && echo "- URL: ${{ vars.APP_URL }}"
+          } >> "$GITHUB_STEP_SUMMARY"
