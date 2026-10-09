@@ -95,7 +95,7 @@ export const appConfig: AppConfig = {
   /* ── Login page ────────────────────────────────────────────────────────── */
   login: {
     /** 'centered' (card) | 'split' (form + brand panel) */
-    layout: 'centered',
+    layout: 'split',
     /** Brand panel side for 'split': 'left' | 'right' */
     panelPosition: 'right',
     /** Background for 'centered': 'none' | 'dots' | 'grid' */
