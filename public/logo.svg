@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Placeholder logo. Replace this file and set `brand.logo: '/logo.svg'` in src/config/app.config.ts -->
+  <rect width="64" height="64" rx="16" fill="#18181b"/>
+  <path d="M20 44 32 18l12 26" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M25 35h14" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+</svg>
